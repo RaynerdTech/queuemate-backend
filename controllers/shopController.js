@@ -5,13 +5,27 @@ const mongoose = require('mongoose');
 const User = require("../models/User");
 
 
+async function generateUniqueShopCode() {
+  let shopCode;
+  let exists = true;
+
+  while (exists) {
+    shopCode =
+      "SHOP-" + Math.random().toString(36).substring(2, 6).toUpperCase();
+    exists = await Shop.exists({ shopCode });
+  }
+
+  return shopCode;
+}
+
+
 exports.createShop = async (req, res) => {
   try {
     if (!req.user || !req.user.id) {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
-    // Prevent multiple shops
+    // Prevent multiple shops per owner
     const existingShop = await Shop.findOne({ owner: req.user.id });
     if (existingShop) {
       return res.status(400).json({
@@ -28,6 +42,9 @@ exports.createShop = async (req, res) => {
     const unique = Date.now().toString(36).slice(-6);
     const slug = `${baseSlug}-${unique}`;
 
+    // Generate unique shop code
+    const shopCode = await generateUniqueShopCode();
+
     // Create shop
     const shop = new Shop({
       name,
@@ -35,16 +52,17 @@ exports.createShop = async (req, res) => {
       location,
       hours,
       slug,
+      shopCode,
       status: "open",
       owner: req.user.id
     });
 
     await shop.save();
 
-    // Update user model with this shop
+    // Keep this — intentional denormalization
     await User.findByIdAndUpdate(
       req.user.id,
-      { shop: shop._id }, // ✅ Correct
+      { shop: shop._id },
       { new: true }
     );
 
@@ -55,6 +73,7 @@ exports.createShop = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
 
 
 

@@ -1,10 +1,11 @@
-// routes/barbers.js
 const express = require('express');
 const router = express.Router();
 const barberController = require('../controllers/barberController');
+const auth = require('../middleware/auth');
 
-router.post('/:shopId/barbers', barberController.createBarber);
-router.get('/:shopId/barbers', barberController.getBarbers);
-router.patch('/:shopId/barbers/:barberId', barberController.updateBarber);
+// NO shopId anywhere 👇
+router.post('/barbers', auth, barberController.createBarber);
+router.get('/barbers', auth, barberController.getBarbers);
+router.patch('/barbers/:barberId', auth, barberController.updateBarber);
 
 module.exports = router;

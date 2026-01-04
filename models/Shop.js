@@ -1,9 +1,19 @@
-// models/Shop.js
 const mongoose = require('mongoose');
 
 const ShopSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  slug: { type: String, required: true, unique: true }, // e.g., fade-masters-abc123
+
+  // Public, SEO / URL friendly
+  slug: { type: String, required: true, unique: true }, 
+  // e.g. fade-masters-abc123
+
+  // Human-friendly tenant identifier (VERY IMPORTANT)
+  shopCode: {
+    type: String,
+    required: true,
+    unique: true,
+    immutable: true, // cannot be changed after creation
+  }, // e.g. SHOP-A9F3
 
   owner: { 
     type: mongoose.Schema.Types.ObjectId, 
@@ -14,11 +24,17 @@ const ShopSchema = new mongoose.Schema({
   phone: String,
   location: String,
   hours: String,
-  status: { type: String, default: 'closed' }, // open, closed, frozen
-  createdAt: { type: Date, default: Date.now },
+
+  status: { 
+    type: String, 
+    // enum: ['open', 'closed', 'frozen'],
+    default: 'closed'
+  },
 
   // For quick stats
   dailyStats: { type: Object, default: {} },
+
+  createdAt: { type: Date, default: Date.now },
 });
 
 module.exports = mongoose.model('Shop', ShopSchema);
