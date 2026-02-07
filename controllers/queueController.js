@@ -1,86 +1,184 @@
-// controllers/queueController.js
 const Customer = require('../models/Customer');
-const Barber = require('../models/Barber');
 const Shop = require('../models/Shop');
+const Barber = require('../models/Barber');
+const crypto = require('crypto');
+const { getQueueForBarber } = require('../services/queueService');
 
+/**
+ * Generate unique queue token
+ */
+function generateQueueToken() {
+  return `q_${crypto.randomBytes(6).toString('hex')}`;
+}
+
+/**
+ * VIEW QUEUE - For customers to see queue of a barber
+ */
+exports.viewQueue = async (req, res) => {
+  const { barberId } = req.params;
+
+  try {
+    const queueState = await getQueueForBarber(barberId);
+
+    res.json(queueState);
+  } catch (err) {
+    console.error('Error fetching queue:', err);
+    res.status(500).json({ message: 'Server error fetching queue' });
+  }
+};
+
+/**
+ * JOIN QUEUE - Customer joins via public shop link (using slug)
+ */
 exports.joinQueue = async (req, res) => {
   try {
-    const { shopId } = req.params;
-    const { name, phone, barberId, serviceName, serviceDuration, note } = req.body;
+    const { slug } = req.params; // shop slug
+    const { barberId, name, phone, serviceId } = req.body;
 
-    // Check if shop exists
-    const shop = await Shop.findById(shopId);
-    if (!shop) return res.status(404).json({ message: 'Shop not found' });
+    // Validation
+    if (!name?.trim()) return res.status(400).json({ message: 'Name is required' });
+    if (!barberId) return res.status(400).json({ message: 'Barber is required' });
+    if (!serviceId) return res.status(400).json({ message: 'Service selection is required' });
 
-    // If barberId is provided, check if barber exists
-    if (barberId) {
-      const barberExists = await Barber.findById(barberId);
-      if (!barberExists) {
-        return res.status(400).json({ message: 'Barber not found' });
-      }
+    // Find shop by slug
+    const shop = await Shop.findOne({ slug, status: 'open' });
+    if (!shop) return res.status(404).json({ message: 'Shop not found or closed' });
+
+    // Verify barber belongs to this shop
+    const barber = await Barber.findOne({ _id: barberId, shop: shop._id, status: 'active' });
+    if (!barber) return res.status(400).json({ message: 'Barber not found or inactive' });
+
+    // Lookup service in barber's services
+    const service = barber.services.id(serviceId);
+    if (!service) return res.status(400).json({ message: 'Service not found for this barber' });
+
+    // Generate unique queue token
+    let queueToken, exists = true, attempts = 0;
+    while (exists && attempts < 5) {
+      queueToken = generateQueueToken();
+      exists = await Customer.exists({ queueToken });
+      attempts++;
     }
+    if (exists) return res.status(500).json({ message: 'Could not generate unique token' });
 
-    // Compute position (per barber or global)
-    let position = 1;
-    if (barberId) {
-      const count = await Customer.countDocuments({
-        shop: shopId,
-        barber: barberId,
-        status: 'waiting'
-      });
-      position = count + 1;
-    } else {
-      const count = await Customer.countDocuments({
-        shop: shopId,
-        status: 'waiting'
-      });
-      position = count + 1;
-    }
-
-    const customer = new Customer({
-      shop: shopId,
-      barber: barberId || null,
-      name,
-      phone,
-      serviceName,
-      serviceDuration,
-      position,
-      note
+    // Create customer in queue
+    const customer = await Customer.create({
+      shop: shop._id,
+      barber: barber._id,
+      name: name.trim(),
+      phone: phone?.trim(),
+      serviceId,
+      serviceName: service.name,
+      serviceDuration: service.duration,
+      queueToken
     });
 
-    await customer.save();
-    res.status(201).json(customer);
+    // Return updated queue
+    const queueState = await getQueueForBarber(barber._id);
+    const myData = queueState.queue.find(c => c.customerId.toString() === customer._id.toString());
+
+    res.status(201).json({
+      queueToken,
+      position: myData?.position || 1,
+      etaMinutes: myData?.etaMinutes || 0,
+      paused: queueState.paused
+    });
+
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error' });
+    console.error('Error in joinQueue:', err);
+    res.status(500).json({ message: 'Server error joining queue' });
   }
 };
 
-
-exports.getQueue = async (req, res) => {
+/**
+ * LEAVE QUEUE - Customer cancels before service
+ */
+exports.leaveQueue = async (req, res) => {
   try {
-    const { shopId } = req.params;
+    const { queueToken } = req.body;
 
-    const customers = await Customer.find({
-      shop: shopId,
-      status: { $in: ['waiting', 'in_service'] }
-    })
-    .populate('barber', 'name') // Populate barber field with only the name
-    .sort('createdAt');
+    if (!queueToken) return res.status(400).json({ message: 'Queue token required' });
 
-    res.json(customers);
+    // Find customer in waiting status
+    const customer = await Customer.findOne({ queueToken, status: 'waiting' });
+    if (!customer) return res.status(404).json({ message: 'Customer not in queue or already served' });
+
+    // Mark as cancelled
+    customer.status = 'cancelled';
+    await customer.save();
+
+    // Return updated queue
+    const queueState = await getQueueForBarber(customer.barber);
+    res.json({ message: 'Successfully left queue', queueState });
+
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error' });
+    console.error('Error in leaveQueue:', err);
+    res.status(500).json({ message: 'Server error leaving queue' });
   }
 };
 
-exports.updateCustomerStatus = async (req, res) => {
-  const { customerId } = req.params;
-  const updated = await Customer.findByIdAndUpdate(
-    customerId,
-    req.body,
-    { new: true }
-  );
-  res.json(updated);
+
+
+
+
+/**
+ * GET PERSONAL QUEUE STATUS - Customer views their own queue
+ */
+exports.getMyQueue = async (req, res) => {
+  try {
+    // Expect: Authorization: Bearer q_xxx
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'Queue token missing' });
+    }
+
+    const queueToken = authHeader.split(' ')[1];
+
+    // Find customer
+    const customer = await Customer.findOne({
+      queueToken,
+      status: 'waiting'
+    });
+
+    if (!customer) {
+      return res.status(404).json({ message: 'Customer not found in queue' });
+    }
+
+    // Get full queue for the barber
+    const queueState = await getQueueForBarber(customer.barber);
+
+    // Find this customer in queue
+    const myData = queueState.queue.find(
+      c => c.customerId.toString() === customer._id.toString()
+    );
+
+    if (!myData) {
+      return res.status(404).json({ message: 'Customer not currently in queue' });
+    }
+
+    // Optional: load shop + barber names (nice UX)
+    const barber = await Barber.findById(customer.barber).select('name');
+    const shop = await Shop.findById(customer.shop).select('name slug');
+
+    res.json({
+      shop: {
+        name: shop?.name,
+        slug: shop?.slug
+      },
+      barber: {
+        name: barber?.name
+      },
+      paused: queueState.paused,
+      you: {
+        name: customer.name,
+        serviceName: customer.serviceName,
+        position: myData.position,
+        etaMinutes: myData.etaMinutes
+      }
+    });
+
+  } catch (err) {
+    console.error('Error fetching personal queue:', err);
+    res.status(500).json({ message: 'Server error fetching queue' });
+  }
 };

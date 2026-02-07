@@ -14,7 +14,7 @@ exports.signup = async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await User.create({ email, passwordHash });
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "7d" });
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "1d" });
 
     res.status(201).json({ token, userId: user._id });
   } catch (err) {
@@ -32,7 +32,7 @@ exports.login = async (req, res) => {
     const isMatch = await user.comparePassword(password);
     if (!isMatch) return res.status(400).json({ message: "Incorrect password" });
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "7d" });
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "1d" });
 
     res.json({ token, userId: user._id, shopId: user.shop });
   } catch (err) {
