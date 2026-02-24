@@ -20,12 +20,57 @@ exports.viewQueue = async (req, res) => {
   try {
     const queueState = await getQueueForBarber(barberId);
 
-    res.json(queueState);
+    const currentlyServingCustomer = await Customer.findOne({
+      barber: barberId,
+      status: 'in_service'
+    }).select('_id name serviceName startedAt serviceDuration')
+
+    let remainingCurrentMinutes = 0;
+
+    if (currentlyServingCustomer) {
+      const now = new Date();
+      const startedAt = new Date(currentlyServingCustomer.startedAt);
+
+      const elapsedMinutes = Math.floor((now - startedAt) / 60000);
+      remainingCurrentMinutes = Math.max(
+        currentlyServingCustomer.serviceDuration - elapsedMinutes,
+        0
+      );
+    }
+
+    // Sum of all queued service durations
+    const queueTotalMinutes = queueState.queue.reduce(
+      (total, customer) => total + (customer.serviceDuration || 0),
+      0
+    );
+
+    const totalEstimatedWaitMinutes =
+      remainingCurrentMinutes + queueTotalMinutes;
+
+    res.json({
+      paused: queueState.paused,
+      queue: queueState.queue,
+      currentlyServing: currentlyServingCustomer
+        ? {
+          customerId: currentlyServingCustomer._id,
+            name: currentlyServingCustomer.name,
+            serviceName: currentlyServingCustomer.serviceName,
+            startedAt: currentlyServingCustomer.startedAt,
+            serviceDuration: currentlyServingCustomer.serviceDuration
+          }
+        : null,
+
+      // 👇 New field (won’t break frontend)
+      totalEstimatedWaitMinutes
+    });
+
   } catch (err) {
     console.error('Error fetching queue:', err);
     res.status(500).json({ message: 'Server error fetching queue' });
   }
 };
+
+
 
 /**
  * JOIN QUEUE - Customer joins via public shop link (using slug)
@@ -126,37 +171,39 @@ exports.leaveQueue = async (req, res) => {
  */
 exports.getMyQueue = async (req, res) => {
   try {
-    // Expect: Authorization: Bearer q_xxx
     const authHeader = req.headers.authorization;
+
     if (!authHeader?.startsWith('Bearer ')) {
       return res.status(401).json({ message: 'Queue token missing' });
     }
 
     const queueToken = authHeader.split(' ')[1];
 
-    // Find customer
+    // Find customer (allow both waiting + in_service)
     const customer = await Customer.findOne({
       queueToken,
-      status: 'waiting'
+      status: { $in: ['waiting', 'in_service'] }
     });
 
     if (!customer) {
-      return res.status(404).json({ message: 'Customer not found in queue' });
+      return res.status(404).json({ message: 'Customer not in queue' });
     }
 
-    // Get full queue for the barber
+    // Get full queue state
     const queueState = await getQueueForBarber(customer.barber);
 
-    // Find this customer in queue
+    // Find this customer in queue list
     const myData = queueState.queue.find(
       c => c.customerId.toString() === customer._id.toString()
     );
 
-    if (!myData) {
-      return res.status(404).json({ message: 'Customer not currently in queue' });
-    }
+    // Find currently serving customer
+    const currentlyServingCustomer = await Customer.findOne({
+      barber: customer.barber,
+      status: 'in_service'
+    }).select('name serviceName startedAt serviceDuration');
 
-    // Optional: load shop + barber names (nice UX)
+    // Load shop + barber names
     const barber = await Barber.findById(customer.barber).select('name');
     const shop = await Shop.findById(customer.shop).select('name slug');
 
@@ -169,11 +216,22 @@ exports.getMyQueue = async (req, res) => {
         name: barber?.name
       },
       paused: queueState.paused,
+
+      currentlyServing: currentlyServingCustomer
+        ? {
+            name: currentlyServingCustomer.name,
+            serviceName: currentlyServingCustomer.serviceName,
+            startedAt: currentlyServingCustomer.startedAt,
+            serviceDuration: currentlyServingCustomer.serviceDuration
+          }
+        : null,
+
       you: {
+        status: customer.status,
         name: customer.name,
         serviceName: customer.serviceName,
-        position: myData.position,
-        etaMinutes: myData.etaMinutes
+        position: myData?.position ?? 0,
+        etaMinutes: myData?.etaMinutes ?? 0
       }
     });
 

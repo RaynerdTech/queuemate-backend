@@ -31,6 +31,8 @@ const ShopSchema = new mongoose.Schema({
     default: 'closed'
   },
 
+  timezone: { type: String, default: 'UTC' },
+
   // For quick stats
   dailyStats: { type: Object, default: {} },
 
